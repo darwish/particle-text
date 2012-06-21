@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+	<head>
+		<title>Particle Text</title>
+		<meta charset="utf-8" />
+		<style type="text/css">
+			body {
+				margin: 0;
+				padding: 10px 0 0 10px;
+				background: #000;
+				color: #FFF;
+				font-family: Arial, Helvetica, sans-serif;
+			}
+
+			canvas {
+				float: right;
+				background: #000;
+				width: 75%;
+				height: 75%;
+				border: 2px solid #DDD;
+			}
+
+			div {
+				margin: 10px 0;
+			}
+
+			label {
+				display: inline-block;
+				min-width: 100px;
+			}
+
+			#lighter_warning {
+				font-size: 1.2em;
+				color: #FF5;
+				display: none;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>NullCandy Particle Text Demo</h1>
+		<canvas id="canvas"></canvas>
+
+		<form id="options_form">
+			<div>
+				<label>Text:</label><input type="text" class="particle_option" id="text" value="Hello" maxlength="10" />
+			</div>
+			<div>
+				<label>Font Size:</label><input type="text" class="particle_option" id="fontSize" value="50" size="3" maxlength="2" /> px
+			</div>
+			<div>
+				<label>Scale:</label><input type="text" class="particle_option" id="scale" value="3" size=1 />
+			</div>
+			<div>
+				<label>Color Mode:</label>
+				<select id="colorMode[0]">
+					<option value="x">Gradient X</option>
+					<option value="y">Gradient Y</option>
+					<option value="xy">Gradient X and Y</option>
+					<option value="rainbow">Rainbow</option>
+				</select>
+			</div>
+			<div>
+				<label>From:</label><input type="text" id="colorMode[1]" value="red" />
+			</div>
+			<div>
+				<label>To:</label><input type="text" id="colorMode[2]" value="yellow" />
+			</div>
+			<div>
+				<label>Compositing:</label>
+				<select class="particle_option" id="compositing">
+					<option>lighter</option>
+					<option>source-over</option>
+					<option>source-in</option>
+					<option>source-out</option>
+					<option>source-atop</option>
+					<option>destination-over</option>
+					<option>destination-in</option>
+					<option>destination-out</option>
+					<option>destination-atop</option>
+					<option>darker</option>
+					<option>copy</option>
+					<option>xor</option>
+				</select>
+			</div>
+			<div id="lighter_warning">
+				If you're running IE or Firefox with hardware acceleration enabled, then the "lighter" compositing mode is <em>extremely</em> slow.
+				Change it to "source-over", or proceed at your own risk.
+			</div>
+			<div>
+				<input type="submit" value="Restart" />
+				<input type="button" id="pause" value="Pause" />
+			</div>
+		</form>
+
+		<script type="text/javascript">
+			/**
+			 * Some options for the particle text effect.
+			 */
+			var options = {
+				text: "Hello Friend",
+				fontSize: 50,
+				fontStyle: "serif",
+				scale: 3,
+				/**
+				 * The canvas's globalCompositeOperation affects how particles blend when overlapping.
+				 * A value of "lighter" causes additive blending, giving a nice glowy effect.
+				 * See https://developer.mozilla.org/en/Canvas_tutorial/Compositing for details.
+				 */
+				compositing: "lighter",
+				/**
+				 * As the particles approach their final destination, we transition into a "jitter"
+				 * effect where the particles are given random, bounded velocities that cause them to
+				 * move around their destinations.
+				 */
+				maxJitterVelocity: 1,
+				/**
+				 * If colorMode is the string "rainbow", in which case each particle will choose
+				 * its color randomly from the list of colors in options.rainbowColors.
+				 *
+				 * Otherwise, colorMode should be an array that defines a gradient:
+				 * 		[direction, fromColor, toColor]
+				 * Here, direction indicates the direction of the gradient and can be "x", "y", or "xy".
+				 * fromColor and toColor are the two gradient endpoints. Having more than two color stops is not supported.
+				 */
+				colorMode: ["y", "white", "black"],
+				rainbowColors: ["blue", "red", "magenta", "green", "yellow", "cyan"]
+			};
+
+
+			function ParticleText(settings) {
+				var particleImage,
+					particles = [],
+					particleCache = {},
+					fpsQueue = [],
+					lastFPSs = [],
+					stopped = false,
+					loadTime,
+					canvas = document.getElementById("canvas"),
+					context = canvas.getContext("2d");
+
+				canvas.width = window.innerWidth * 0.75;
+				canvas.height = window.innerHeight * 0.75;
+
+				// Canvas tranformations get composed, so if we scale by 2 twice,
+				// it'll end up with a scale of 4. Since we want to SET the scale
+				// rather than add to it, we have to restore the canvas to its original
+				// state each time we run the effect.
+				context.restore();
+				context.save();
+
+				// Clear the canvas and set some properties.
+				context.clearRect(0, 0, canvas.width, canvas.height);
+				context.globalCompositeOperation = settings.compositing;
+				context.scale(settings.scale, settings.scale);
+
+				// Attempt browser compatibility.
+				// See https://developer.mozilla.org/en/DOM/window.requestAnimationFrame
+				var requestAnimationFrame = window.requestAnimationFrame
+					|| window.mozRequestAnimationFrame
+					|| window.webkitRequestAnimationFrame
+					|| window.msRequestAnimationFrame
+					|| window.setTimeout;
+
+				// Load the image that will be used for the particles.
+				// Here we're using data URIs to load the image inline, but external resources
+				// can be loaded too. That's why it's important to only run the initialization
+				// after the image has loaded.
+				particleImage = document.createElement("img");
+				particleImage.src = 'data:image/png;base64,' +
+					'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAABGdBTUEAALGPC/xhBQAAAAlwSFlzAAAO' +
+					'wwAADsMBx2+oZAAAABp0RVh0U29mdHdhcmUAUGFpbnQuTkVUIHYzLjUuMTAw9HKhAAAAP0lEQVQYV2MQ' +
+					'FBRk1tTUlNDW1pYSERFhYQBxKioqspuamkoNDAwUGEAyIE5/f3+jsbGxMgNIGUgGxJGQkGADANTkDjD5' +
+					'pQNHAAAAAElFTkSuQmCC';
+				// Once the image is loaded, the particles are initialized, then the update loop starts.
+				// The updateParticles() function calls itself continuously.
+				particleImage.addEventListener("load", function() {
+					initializeParticles();
+					updateParticles();
+				});
+
+				// Some exports for convenient debugging and starting/stopping.
+				return {
+					particles: particles,
+					particleCache: particleCache,
+					canvas: canvas,
+					context: context,
+					stop: function() { stopped = true; },
+					start: function() {
+						stopped = false;
+						updateParticles();
+					}
+				};
+
+				/**
+				 * The main update loop.
+				 * We clear and redraw the entire canvas every frame.
+				 * For every particle, we update its velocity and position so that
+				 * it slows a little as it approaches its destination, then we draw
+				 * it on the canvas.
+				 */
+				function updateParticles() {
+					if (stopped) {
+						return;
+					}
+					context.clearRect(0, 0, canvas.width, canvas.height);
+
+					drawStats();
+
+					for (var i = 0; i < particles.length; i++) {
+						var particle = particles[i],
+
+							dx = particle.destination[0] - particle.position[0],
+							dy = particle.destination[1] - particle.position[1],
+							distanceSquared = dx * dx + dy * dy;
+
+						if (distanceSquared > settings.maxJitterVelocity) {
+							particle.velocity = [dx / 30, dy / 30];
+						} else {
+							particle.velocity[0] = Math.min(
+								settings.maxJitterVelocity,
+								Math.max(-settings.maxJitterVelocity, particle.velocity[0] + Math.random() - 0.5)
+							);
+							particle.velocity[1] = Math.min(
+								settings.maxJitterVelocity,
+								Math.max(-settings.maxJitterVelocity, particle.velocity[1] + Math.random() - 0.5)
+							);
+						}
+						particle.position[0] += particle.velocity[0];
+						particle.position[1] += particle.velocity[1];
+
+						drawParticle(particle);
+					}
+
+					if (!stopped) {
+						requestAnimationFrame(updateParticles);
+					}
+				}
+
+				/**
+				 * Draw the particle on the canvas. Simple enough.
+				 */
+				function drawParticle(particle) {
+					context.drawImage(particle.image, particle.position[0], particle.position[1]);
+				}
+
+				/**
+				 * Here's where the magic happens.
+				 * Step 1: Create a temporary canvas.
+				 * Step 2: Draw the text to the temporary canvas.
+				 * Step 3: Read the pixels back from the temporary canvas, and add those
+				 *         that are part of the text to a list of particles. We differentiate
+				 *         background pixels from text pixels based on color.
+				 * Step 4: Store the particle's destination as the point on the temporary canvas.
+				 *         Give it a random starting position, and tint it the appropriate color.
+				 */
+				function initializeParticles() {
+					var startTime = new Date().getTime();
+
+					// Step 1: Create a temporary canvas.
+					var tempCanvas = document.createElement("canvas");
+					tempCanvas.width = canvas.width;
+					tempCanvas.height = canvas.height;
+
+					// Fill the canvas in with a white background. Our text will be black.
+					var tempContext = tempCanvas.getContext("2d");
+					tempContext.fillStyle = "white";
+					tempContext.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+					// Step 2: Draw the text to the temporary canvas.
+					tempContext.font = settings.fontSize + "px " + settings.fontStyle;
+					tempContext.textBaseline = "top";
+					tempContext.fillStyle = "black";
+
+					tempContext.fillText(settings.text, 0, 0);
+					var textSize = [tempContext.measureText(settings.text).width, settings.fontSize];
+
+					// Step 3: Read the pixels back from the temporary canvas.
+					var imageData = tempContext.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+
+					var particleCount = countParticles(imageData);
+					if (particleCount > 10000) {
+						stopped = true;
+						alert(particleCount + " particles is too many particles.\nTry reducing the font size or shortening the text.");
+						return;
+					}
+
+					for (var x = 0; x < imageData.width; x++) {
+						for (var y = 0; y < imageData.height; y++) {
+							var pixelIndex = imageData.width * 4 * y + x * 4,
+								r = imageData.data[pixelIndex],
+								g = imageData.data[pixelIndex + 1],
+								b = imageData.data[pixelIndex + 2],
+								a = imageData.data[pixelIndex + 3];
+
+							// If it's not white, it gets added as a particle.
+							if (isParticlePixel(r, g, b, a)) {
+								var color;
+								if (settings.colorMode === "rainbow") {
+									// If we're in rainbow color mode, choose a random color from the list.
+									color = settings.rainbowColors[Math.floor(Math.random() * settings.rainbowColors.length)];
+								} else {
+									// Otherwise, we have to calculate the appropriate color based on
+									// how far we are along the gradient.
+									var amount = 0;
+									if (settings.colorMode[0] === "x") {
+										amount = x / textSize[0];
+									} else if (settings.colorMode[0] === "y") {
+										amount = y / textSize[1];
+									} else {
+										amount = (x * x + y * y) / (textSize[0] * textSize[0] + textSize[1]  * textSize[1]);
+									}
+									color = lerpColor(settings.colorMode[1], settings.colorMode[2], amount);
+								}
+								// Add the particle to the list, with a random starting position.
+								particles.push({
+									position: [Math.floor(Math.random() * canvas.width), Math.floor(Math.random() * canvas.height)],
+									image: tintParticle(color),
+									destination: [x, y],
+									velocity: [0, 0]
+								});
+							}
+						}
+					}
+
+					// Store how long this whole thing took us.
+					loadTime = new Date().getTime() - startTime;
+				}
+
+				function countParticles(imageData) {
+					var count = 0;
+					for (var x = 0; x < imageData.width; x++) {
+						for (var y = 0; y < imageData.height; y++) {
+							var pixelIndex = imageData.width * 4 * y + x * 4,
+								r = imageData.data[pixelIndex],
+								g = imageData.data[pixelIndex + 1],
+								b = imageData.data[pixelIndex + 2],
+								a = imageData.data[pixelIndex + 3];
+
+							// If it's not white, it gets added as a particle.
+							if (isParticlePixel(r, g, b, a)) {
+								count++;
+							}
+						}
+					}
+					return count;
+				}
+
+				function isParticlePixel(r, g, b, a) {
+					return r !== 255 || g !== 255 || b !== 255;
+				}
+
+				/**
+				 * Here, we take the original particle image and tint it.
+				 * Here's how it works:
+				 * Step 1: Create a temporary canvas.
+				 * Step 2: Draw the particle image to the canvas.
+				 * Step 3: Fill the canvas with a rectangle the color of the tint.
+				 *
+				 * The key here is choosing the right globalCompositeOperation.
+				 * Choosing source-atop means that the source (the tinted rectangle)
+				 * gets drawn only where the destination (the particle image) exists.
+				 *
+				 * There are better ways of doing it (pixel-by-pixel, namely), but this
+				 * is slow enough as it is. It's slow enough that we need want to
+				 * cache particles so that two particles of the same color can use the
+				 * same image.
+				 */
+				function tintParticle(color) {
+					if (color in particleCache) {
+						return particleCache[color];
+					}
+
+					var tintCanvas = document.createElement("canvas");
+					tintCanvas.width = particleImage.width;
+					tintCanvas.height = particleImage.height;
+
+					var tintContext = tintCanvas.getContext("2d");
+
+					tintContext.drawImage(particleImage, 0, 0);
+
+					tintContext.globalCompositeOperation = "source-atop";
+
+					tintContext.fillStyle = color;
+					tintContext.fillRect(0, 0, tintCanvas.width, tintCanvas.height);
+
+					particleCache[color] = tintCanvas;
+					return tintCanvas;
+				}
+
+				/**
+				 * Interpolate linearly between two colors.
+				 * We do linear interpolation on each of the RGB components separately.
+				 */
+				function lerpColor(from, to, amount) {
+					var fromHex = colourNameToHex(from),
+						toHex = colourNameToHex(to),
+						fromR = fromHex >> 16,
+						fromG = (fromHex & 0xFF00) >> 8,
+						fromB = fromHex & 0xFF,
+						toR = toHex >> 16,
+						toG = (toHex & 0xFF00) >> 8,
+						toB = toHex & 0xFF,
+						r = ~~(fromR + amount * (toR - fromR)),
+						g = ~~(fromG + amount * (toG - fromG)),
+						b = ~~(fromB + amount * (toB - fromB));
+					return "rgba("+r+", "+g+", "+b+", 1)";
+				}
+
+				/**
+				 * Draws the following statistics on the canvas:
+				 * FPS, Number of particles, and Load time.
+				 * The framerate calculations are also performed here, as is
+				 * a check to see if things are running way too slowly.
+				 */
+				function drawStats() {
+					// Calculate FPS
+					var now = new Date().getTime();
+					fpsQueue.push(now);
+					while (fpsQueue.length && (now - fpsQueue[0]) > 1000) {
+						fpsQueue.shift();
+					}
+					checkForSlowness();
+
+					context.font = (15 / settings.scale) + "px serif";
+					context.textBaseline = "bottom";
+					context.fillStyle = "white";
+
+					var statsText = "FPS: " + fpsQueue.length +
+					"  Particles: " + particles.length +
+					"  Load Time: " + loadTime + "ms";
+					context.fillText(statsText, 0, canvas.height / settings.scale);
+				}
+
+				/**
+				 * It's very easy to over-tax your browser by choosing an inappropriate setting,
+				 * or specifying too much text. To avoid completely unresponsive browsers, if we
+				 * detect too low a framerate, we try one of two things:
+				 *     - If the current compositing mode is "lighter", we switch away from it.
+				 *       Lighter performs particularly badly in Firefox and IE, and in Firefox
+				 *       it's exacerbated by having hardware acceleration ENABLED. Strange, I know.
+				 *     - Otherwise, we shut down the effect and hope you have the sense to try again
+				 *       with more reasonable settings.
+				 */
+				function checkForSlowness() {
+					lastFPSs.push(fpsQueue.length);
+					if (lastFPSs.length > 10) {
+						lastFPSs.shift();
+					} else if (lastFPSs.length < 10) {
+						return;
+					}
+
+					var minFPS = null,
+						maxFPS = null;
+					for (var i = 0; i < lastFPSs.length; i++) {
+						if (minFPS === null || lastFPSs[i] < minFPS) {
+							minFPS = lastFPSs[i];
+						}
+						if (maxFPS === null || lastFPSs[i] > maxFPS) {
+							maxFPS = lastFPSs[i];
+						}
+					}
+					if (maxFPS - minFPS <= 1 && maxFPS <= 10) {
+						var isFirefox = navigator.userAgent.match(/firefox/i),
+							isIE = navigator.userAgent.match(/msie/i);
+						if (settings.compositing === "lighter") {
+							settings.compositing = "source-over";
+							context.globalCompositeOperation = settings.compositing;
+							document.getElementById("compositing").selectedIndex = 1;
+							lastFPSs = [];
+							alert("We've detected that you're running a little slowly.\nYour compositing settings have been changed to try to help.\nYou can also try disabling hardware acceleration.");
+						} else {
+							stopped = true;
+							var text = isFirefox || isIE ? "\nTry using Chrome instead." : "\nTry reducing the font size or shortening the text.";
+							alert("Looks like your broswer can't keep up."+text);
+						}
+					}
+				}
+			}
+
+			// The rest of this stuff is for the form that controls the options.
+			// It's not very interesting.
+
+
+			if (navigator.userAgent.match(/(firefox|msie)/i)) {
+				document.getElementById("lighter_warning").style.display = "block";
+			}
+
+			var particleText;
+			document.getElementById("options_form").addEventListener("submit", function(e) {
+				initParticleText();
+				e.preventDefault();
+			});
+			document.getElementById("colorMode[0]").addEventListener("change", function() {
+				var colorMode = document.getElementById("colorMode[0]").value;
+				document.getElementById("colorMode[1]").disabled = colorMode === "rainbow";
+				document.getElementById("colorMode[2]").disabled = colorMode === "rainbow";
+			});
+			document.getElementById("pause").addEventListener("click", function() {
+				if (particleText) {
+					particleText.stop();
+				}
+			});
+
+			function initParticleText() {
+				var inputs = document.querySelectorAll(".particle_option");
+				for (var i = 0; i < inputs.length; i++) {
+					var input = inputs[i];
+					options[input.id] = input.value;
+				}
+
+				var colorMode = document.getElementById("colorMode[0]").value;
+				if (colorMode === "rainbow") {
+					options.colorMode = colorMode;
+				} else {
+					options.colorMode = [
+						document.getElementById("colorMode[0]").value,
+						document.getElementById("colorMode[1]").value,
+						document.getElementById("colorMode[2]").value
+					];
+				}
+
+				if (particleText) {
+					particleText.stop();
+				}
+				particleText = new ParticleText(options);
+			}
+
+			function colourNameToHex(colour) {
+				var colours = {
+					"aliceblue":0xf0f8ff,"antiquewhite":0xfaebd7,"aqua":0x00ffff,"aquamarine":0x7fffd4,"azure":0xf0ffff,
+					"beige":0xf5f5dc,"bisque":0xffe4c4,"black":0x000000,"blanchedalmond":0xffebcd,"blue":0x0000ff,"blueviolet":0x8a2be2,"brown":0xa52a2a,"burlywood":0xdeb887,
+					"cadetblue":0x5f9ea0,"chartreuse":0x7fff00,"chocolate":0xd2691e,"coral":0xff7f50,"cornflowerblue":0x6495ed,"cornsilk":0xfff8dc,"crimson":0xdc143c,"cyan":0x00ffff,
+					"darkblue":0x00008b,"darkcyan":0x008b8b,"darkgoldenrod":0xb8860b,"darkgray":0xa9a9a9,"darkgreen":0x006400,"darkkhaki":0xbdb76b,"darkmagenta":0x8b008b,"darkolivegreen":0x556b2f,
+					"darkorange":0xff8c00,"darkorchid":0x9932cc,"darkred":0x8b0000,"darksalmon":0xe9967a,"darkseagreen":0x8fbc8f,"darkslateblue":0x483d8b,"darkslategray":0x2f4f4f,"darkturquoise":0x00ced1,
+					"darkviolet":0x9400d3,"deeppink":0xff1493,"deepskyblue":0x00bfff,"dimgray":0x696969,"dodgerblue":0x1e90ff,
+					"firebrick":0xb22222,"floralwhite":0xfffaf0,"forestgreen":0x228b22,"fuchsia":0xff00ff,
+					"gainsboro":0xdcdcdc,"ghostwhite":0xf8f8ff,"gold":0xffd700,"goldenrod":0xdaa520,"gray":0x808080,"green":0x008000,"greenyellow":0xadff2f,
+					"honeydew":0xf0fff0,"hotpink":0xff69b4,
+					"indianred ":0xcd5c5c,"indigo ":0x4b0082,"ivory":0xfffff0,"khaki":0xf0e68c,
+					"lavender":0xe6e6fa,"lavenderblush":0xfff0f5,"lawngreen":0x7cfc00,"lemonchiffon":0xfffacd,"lightblue":0xadd8e6,"lightcoral":0xf08080,"lightcyan":0xe0ffff,"lightgoldenrodyellow":0xfafad2,
+					"lightgrey":0xd3d3d3,"lightgreen":0x90ee90,"lightpink":0xffb6c1,"lightsalmon":0xffa07a,"lightseagreen":0x20b2aa,"lightskyblue":0x87cefa,"lightslategray":0x778899,"lightsteelblue":0xb0c4de,
+					"lightyellow":0xffffe0,"lime":0x00ff00,"limegreen":0x32cd32,"linen":0xfaf0e6,
+					"magenta":0xff00ff,"maroon":0x800000,"mediumaquamarine":0x66cdaa,"mediumblue":0x0000cd,"mediumorchid":0xba55d3,"mediumpurple":0x9370d8,"mediumseagreen":0x3cb371,"mediumslateblue":0x7b68ee,
+					"mediumspringgreen":0x00fa9a,"mediumturquoise":0x48d1cc,"mediumvioletred":0xc71585,"midnightblue":0x191970,"mintcream":0xf5fffa,"mistyrose":0xffe4e1,"moccasin":0xffe4b5,
+					"navajowhite":0xffdead,"navy":0x000080,
+					"oldlace":0xfdf5e6,"olive":0x808000,"olivedrab":0x6b8e23,"orange":0xffa500,"orangered":0xff4500,"orchid":0xda70d6,
+					"palegoldenrod":0xeee8aa,"palegreen":0x98fb98,"paleturquoise":0xafeeee,"palevioletred":0xd87093,"papayawhip":0xffefd5,"peachpuff":0xffdab9,"peru":0xcd853f,"pink":0xffc0cb,"plum":0xdda0dd,"powderblue":0xb0e0e6,"purple":0x800080,
+					"red":0xff0000,"rosybrown":0xbc8f8f,"royalblue":0x4169e1,
+					"saddlebrown":0x8b4513,"salmon":0xfa8072,"sandybrown":0xf4a460,"seagreen":0x2e8b57,"seashell":0xfff5ee,"sienna":0xa0522d,"silver":0xc0c0c0,"skyblue":0x87ceeb,"slateblue":0x6a5acd,"slategray":0x708090,"snow":0xfffafa,"springgreen":0x00ff7f,"steelblue":0x4682b4,
+					"tan":0xd2b48c,"teal":0x008080,"thistle":0xd8bfd8,"tomato":0xff6347,"turquoise":0x40e0d0,
+					"violet":0xee82ee,
+					"wheat":0xf5deb3,"white":0xffffff,"whitesmoke":0xf5f5f5,
+					"yellow":0xffff00,"yellowgreen":0x9acd32
+				};
+
+				if (typeof colours[colour.toLowerCase()] != 'undefined') {
+					return colours[colour.toLowerCase()];
+				}
+
+				return false;
+			}
+		</script>
+	</body>
+</html>
