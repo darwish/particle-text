@@ -6,4 +6,4 @@ A fun little demo showing the use of particle effects to render text on a canvas
 
 [Blog Post](http://nullcandy.com/particle-text-in-xna-and-javascript/)
 
-[![Watch the video](https://github.com/darwish/particle-text/assets/292570/122e0fdb-2ccf-4afc-9c05-43993f23df7f)](https://youtu.be/2HrIbEiwPzQ)
+https://github.com/darwish/particle-text/assets/292570/04f6b91f-aefd-43d0-b012-98d63cd87a56
